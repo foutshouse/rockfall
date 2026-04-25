@@ -49,11 +49,12 @@ The file is organized into clearly-labeled sections:
      b. Input           — keyboard on desktop, touch drag on phone
      c. Game state      — score, wave number, base health
      d. Asteroids       — the rocks you launch
-     e. Ships           — regular enemies + healer ship (green +)
-     f. Collisions      — who hits who and what happens
-     g. Drawing         — paints the canvas 60 times per second
-     h. Sound           — short beeps, generated live (no audio files)
-     i. Main loop       — ties it all together
+     e. Ships           — regulars (teal), healer (green +), carrier (boss)
+     f. Difficulty      — ramps steadily and peaks around wave 20
+     g. Collisions      — who hits who and what happens
+     h. Drawing         — paints the canvas 60 times per second
+     i. Sound           — short beeps, generated live (no audio files)
+     j. Main loop       — ties it all together
 
 If you're still unsure, upload the file to virustotal.com. It will
 scan it against ~70 antivirus engines and come back clean.
@@ -71,8 +72,6 @@ scan it against ~70 antivirus engines and come back clean.
 
 <!-- =====================================================
      SECTION 1 — CSS styles
-     These rules describe what things LOOK like on screen.
-     Nothing here can talk to the internet — purely cosmetic.
      ===================================================== -->
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -83,13 +82,13 @@ scan it against ~70 antivirus engines and come back clean.
     overflow: hidden;
     user-select: none;
     -webkit-user-select: none;
-    touch-action: none;       /* stops the browser from scrolling/zooming when you touch the canvas */
+    touch-action: none;
     overscroll-behavior: none;
   }
   body {
     display: flex; align-items: center; justify-content: center;
     width: 100vw; height: 100vh;
-    height: 100dvh;           /* better on mobile — accounts for browser UI */
+    height: 100dvh;
   }
   #wrap {
     position: relative;
@@ -111,6 +110,24 @@ scan it against ~70 antivirus engines and come back clean.
     z-index: 5;
   }
   .hud-label { opacity: 0.55; margin-right: 6px; }
+  #boss-banner {
+    position: absolute;
+    top: 50px; left: 0; right: 0;
+    text-align: center;
+    font-size: clamp(13px, 2vmin, 18px);
+    letter-spacing: 8px;
+    color: #ff4d6d;
+    pointer-events: none;
+    z-index: 5;
+    text-shadow: 0 0 12px #ff4d6d;
+    animation: bossPulse 0.8s infinite alternate;
+    display: none;
+  }
+  #boss-banner.visible { display: block; }
+  @keyframes bossPulse {
+    from { opacity: 0.5; }
+    to   { opacity: 1; }
+  }
   .overlay {
     position: absolute; inset: 0;
     display: flex; flex-direction: column;
@@ -154,13 +171,11 @@ scan it against ~70 antivirus engines and come back clean.
     51%, 100% { opacity: 0.12; }
   }
   .hidden { display: none !important; }
-  /* Show desktop controls on desktop, touch controls on phones */
   .desktop-only { display: block; }
   .touch-only { display: none; }
   body.is-touch .desktop-only { display: none; }
   body.is-touch .touch-only { display: block; }
 
-  /* Rotate prompt for phones held in portrait */
   #rotate {
     position: absolute; inset: 0;
     background: #000;
@@ -170,6 +185,7 @@ scan it against ~70 antivirus engines and come back clean.
     z-index: 20;
     font-size: 16px; letter-spacing: 3px;
     flex-direction: column;
+    cursor: pointer;
   }
   #rotate .icon {
     font-size: 56px; margin-bottom: 20px;
@@ -179,7 +195,13 @@ scan it against ~70 antivirus engines and come back clean.
     0%, 40%   { transform: rotate(0deg); }
     60%, 100% { transform: rotate(-90deg); }
   }
+  #rotate .dismiss {
+    margin-top: 28px; font-size: 11px;
+    opacity: 0.55; letter-spacing: 2px;
+    text-decoration: underline; text-underline-offset: 4px;
+  }
   body.is-touch.is-portrait #rotate { display: flex; }
+  body.rotate-dismissed #rotate { display: none !important; }
 </style>
 </head>
 
@@ -187,8 +209,6 @@ scan it against ~70 antivirus engines and come back clean.
 
 <!-- =====================================================
      SECTION 2 — HTML structure
-     The visible pieces of the page. None of these can run
-     code by themselves — they're containers the JS draws into.
      ===================================================== -->
 <div id="wrap">
   <canvas id="game"></canvas>
@@ -198,6 +218,8 @@ scan it against ~70 antivirus engines and come back clean.
     <div><span class="hud-label">WAVE</span><span id="wave">1</span></div>
     <div><span class="hud-label">BASE</span><span id="hp">100</span></div>
   </div>
+
+  <div id="boss-banner">&#9888; CARRIER INBOUND &#9888;</div>
 
   <div id="intro" class="overlay">
     <h1>ROCKFALL</h1>
@@ -216,7 +238,12 @@ scan it against ~70 antivirus engines and come back clean.
       </div>
     </div>
     <p class="hint">bigger charge &rarr; bigger rock &rarr; more splits when shot</p>
-    <p class="hint" style="margin-top:1vmin;">watch for the green <strong style="color:#5fff8e;">+</strong> ship — it heals your base</p>
+    <p class="hint" style="margin-top:1vmin;">
+      <strong style="color:#5fff8e;">+</strong> healer ship &mdash; only big rocks can crack it
+    </p>
+    <p class="hint">
+      <strong style="color:#ff4d6d;">&#9888;</strong> carrier &mdash; spawns ships until destroyed
+    </p>
     <div class="start desktop-only">PRESS ANY KEY TO BEGIN</div>
     <div class="start touch-only">TAP TO BEGIN</div>
   </div>
@@ -234,84 +261,94 @@ scan it against ~70 antivirus engines and come back clean.
     <div class="icon">&#x21BB;</div>
     <div>ROTATE YOUR PHONE</div>
     <div style="margin-top:14px; font-size:11px; opacity:0.6; letter-spacing:2px;">LANDSCAPE PLAYS BETTER</div>
+    <div class="dismiss" id="rotate-dismiss">PLAY ANYWAY &rarr;</div>
   </div>
 </div>
 
 <!-- =====================================================
      SECTION 3 — JavaScript (the game logic)
-     Runs entirely inside the browser sandbox. Math, drawing,
-     input, and synth-generated sound. No network, no storage.
      ===================================================== -->
 <script>
 'use strict';
 
+// =====================================================
+// COLORS — central palette so they're easy to tweak
+// =====================================================
+const COL_PLAYER  = '#ffffff';   // base, rocks, your stuff
+const COL_ENEMY   = '#4dd6e0';   // teal — regular ships and their bullets
+const COL_HEALER  = '#5fff8e';   // green — heal ship
+const COL_BOSS    = '#ff4d6d';   // pink/red — carrier boss
+const COL_DAMAGE  = '#ff6a6a';   // base flash when hit
+const COL_LOWHP   = '#ff5555';   // hp bar when low
+
 // -----------------------------------------------------
 // 3a. CANVAS SIZING — works on phone and desktop
-// The game world is a fixed 900x700 logical area, but the
-// canvas itself fits the window. We scale the drawing to match.
+// Game world is a fixed 900x700 logical area; the canvas
+// itself fits the window and the drawing is scaled to match.
 // -----------------------------------------------------
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-
-// "Logical" game world coordinates — game logic always uses these.
 const W = 900, H = 700;
-
-// Drawing scale (how big 1 logical pixel is on screen) and offsets
-// (the black bars left/right or top/bottom when aspect ratios differ).
 let scale = 1, offsetX = 0, offsetY = 0;
 
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
   const winW = window.innerWidth;
   const winH = window.innerHeight;
-
-  // Set the canvas's actual pixel buffer to match the screen.
   canvas.width  = winW * dpr;
   canvas.height = winH * dpr;
   canvas.style.width  = winW + 'px';
   canvas.style.height = winH + 'px';
-
-  // Figure out how to fit a 900x700 game into the available space
-  // while preserving aspect ratio (letterbox if needed).
   const sx = winW / W;
   const sy = winH / H;
   scale = Math.min(sx, sy);
   offsetX = (winW - W * scale) / 2;
   offsetY = (winH - H * scale) / 2;
-
-  // Tell the canvas: every drawing call we make is in logical
-  // coordinates, scaled and centered into the screen.
   ctx.setTransform(dpr * scale, 0, 0, dpr * scale,
                    dpr * offsetX, dpr * offsetY);
 
-  // Detect portrait phones so we can show the rotate prompt.
-  document.body.classList.toggle('is-portrait', winH > winW * 1.15);
+  // Use the browser's built-in orientation media query — far more reliable
+  // than guessing from window dimensions, which iOS Safari and others
+  // misreport during URL-bar transitions and rotation animations.
+  let isPortrait = false;
+  if (window.matchMedia) {
+    isPortrait = window.matchMedia('(orientation: portrait)').matches;
+  } else {
+    isPortrait = winH > winW;
+  }
+  document.body.classList.toggle('is-portrait', isPortrait);
 }
 window.addEventListener('resize', resizeCanvas);
-window.addEventListener('orientationchange', resizeCanvas);
+window.addEventListener('orientationchange', () => {
+  // Phones don't always finish their layout immediately on rotation.
+  // Re-check a few times so we catch the final size.
+  resizeCanvas();
+  setTimeout(resizeCanvas, 200);
+  setTimeout(resizeCanvas, 600);
+});
+if (window.matchMedia) {
+  window.matchMedia('(orientation: portrait)').addEventListener?.('change', resizeCanvas);
+}
 
-// Detect touch devices (phones, tablets). We won't show keyboard hints on those.
 const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 if (isTouch) document.body.classList.add('is-touch');
 
 resizeCanvas();
 
-
-// Grab references to the HTML elements we'll be updating.
-const scoreEl      = document.getElementById('score');
-const waveEl       = document.getElementById('wave');
-const hpEl         = document.getElementById('hp');
-const introEl      = document.getElementById('intro');
-const gameoverEl   = document.getElementById('gameover');
-const finalScoreEl = document.getElementById('finalScore');
-const finalWaveEl  = document.getElementById('finalWave');
+// References to HTML elements we update.
+const scoreEl       = document.getElementById('score');
+const waveEl        = document.getElementById('wave');
+const hpEl          = document.getElementById('hp');
+const introEl       = document.getElementById('intro');
+const gameoverEl    = document.getElementById('gameover');
+const finalScoreEl  = document.getElementById('finalScore');
+const finalWaveEl   = document.getElementById('finalWave');
+const bossBannerEl  = document.getElementById('boss-banner');
 
 
 // -----------------------------------------------------
 // 3b. INPUT — keyboard for desktop, touch drag for phone
 // -----------------------------------------------------
-
-// --- Keyboard ---
 const keys = {};
 const IGNORE = ['Shift','Control','Alt','Meta','CapsLock','Tab','Escape'];
 
@@ -331,17 +368,11 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => { keys[e.key] = false; });
 
-
-// --- Touch ---
-// Drag-to-aim: while a finger is down, the launcher faces toward
-// the finger and the shot charges up. Lift finger = fire.
-let touchActive = false;
-let touchX = 0, touchY = 0;     // in logical (900x700) coords
-let touchAimAngle = null;       // null = not aiming
-let touchHoldFiring = false;    // true while charging
+let touchActive = false, touchX = 0, touchY = 0;
+let touchAimAngle = null;
+let touchHoldFiring = false;
 
 function screenToLogical(clientX, clientY) {
-  // Convert a screen pixel to our 900x700 game coordinate system.
   return {
     x: (clientX - offsetX) / scale,
     y: (clientY - offsetY) / scale
@@ -350,11 +381,8 @@ function screenToLogical(clientX, clientY) {
 
 function handleTouchStart(e) {
   e.preventDefault();
-  // Tap to dismiss intro / gameover screens
   if (state !== 'playing') {
-    if (state === 'intro' || (state === 'gameover' && gameoverVisible)) {
-      startGame();
-    }
+    if (state === 'intro' || (state === 'gameover' && gameoverVisible)) startGame();
     return;
   }
   if (!e.touches || e.touches.length === 0) return;
@@ -363,10 +391,8 @@ function handleTouchStart(e) {
   touchActive = true;
   touchX = p.x; touchY = p.y;
   touchHoldFiring = true;
-  // Compute initial aim angle from base to finger.
   if (base) touchAimAngle = Math.atan2(touchY - base.y, touchX - base.x);
 }
-
 function handleTouchMove(e) {
   e.preventDefault();
   if (!touchActive || !e.touches || e.touches.length === 0) return;
@@ -375,20 +401,34 @@ function handleTouchMove(e) {
   touchX = p.x; touchY = p.y;
   if (base) touchAimAngle = Math.atan2(touchY - base.y, touchX - base.x);
 }
-
 function handleTouchEnd(e) {
   e.preventDefault();
   touchActive = false;
   touchHoldFiring = false;
-  // touchAimAngle stays where it was — the launcher remembers its last aim
 }
-
 canvas.addEventListener('touchstart',  handleTouchStart,  { passive: false });
 canvas.addEventListener('touchmove',   handleTouchMove,   { passive: false });
 canvas.addEventListener('touchend',    handleTouchEnd,    { passive: false });
 canvas.addEventListener('touchcancel', handleTouchEnd,    { passive: false });
 
-// Also let mouse work on desktop (for testing or trackpad use).
+// ALSO listen on the window. The intro and gameover overlays sit on top
+// of the canvas — taps on those need to register too. Without this, the
+// "tap to begin" message has nothing listening for the tap.
+window.addEventListener('touchstart',  handleTouchStart,  { passive: false });
+window.addEventListener('touchmove',   handleTouchMove,   { passive: false });
+window.addEventListener('touchend',    handleTouchEnd,    { passive: false });
+window.addEventListener('touchcancel', handleTouchEnd,    { passive: false });
+
+// Tap-anywhere dismiss for the rotate-your-phone prompt, in case our
+// portrait detection misfires on a particular device.
+document.getElementById('rotate').addEventListener('click', () => {
+  document.body.classList.add('rotate-dismissed');
+});
+document.getElementById('rotate').addEventListener('touchend', e => {
+  e.preventDefault();
+  document.body.classList.add('rotate-dismissed');
+}, { passive: false });
+
 let mouseDown = false;
 canvas.addEventListener('mousedown', e => {
   if (state !== 'playing') {
@@ -411,14 +451,11 @@ canvas.addEventListener('mouseup', () => {
   mouseDown = false; touchActive = false; touchHoldFiring = false;
 });
 
-
-// Try to keep the screen awake while playing (mobile feature).
 let wakeLock = null;
 async function requestWakeLock() {
-  // We only call this from a user gesture (game start), per browser rules.
   if ('wakeLock' in navigator) {
     try { wakeLock = await navigator.wakeLock.request('screen'); }
-    catch(e) { /* no big deal if it fails */ }
+    catch(e) {}
   }
 }
 document.addEventListener('visibilitychange', () => {
@@ -428,18 +465,17 @@ document.addEventListener('visibilitychange', () => {
 
 // -----------------------------------------------------
 // 3c. GAME STATE
-// All variables describing "what's happening right now."
-// Lives only in memory. When you close the tab, it's gone.
 // -----------------------------------------------------
-let state = 'intro';              // 'intro' | 'playing' | 'gameover'
+let state = 'intro';
 let gameoverVisible = false;
 let score = 0, wave = 0;
 let shipsToSpawn = 0, spawnTimer = 0, waveClearTimer = 0;
-let healerCooldown = 0;           // frames until next healer ship is allowed
+let healerCooldown = 0;
+let bossPendingNextWave = false;     // set true when next wave should include the boss
+let bossAlive = false;
 let shake = 0, baseFlash = 0, healFlash = 0;
 let base, asteroids = [], ships = [], bullets = [], particles = [];
 
-// A star field — decorative dots drawn behind the action.
 const stars = [];
 for (let i = 0; i < 130; i++) {
   stars.push({
@@ -455,6 +491,7 @@ function startGame() {
   gameoverVisible = false;
   introEl.classList.add('hidden');
   gameoverEl.classList.add('hidden');
+  bossBannerEl.classList.remove('visible');
   score = 0; wave = 0;
   shake = 0; baseFlash = 0; healFlash = 0;
   base = {
@@ -465,6 +502,8 @@ function startGame() {
   };
   asteroids = []; ships = []; bullets = []; particles = [];
   healerCooldown = 0;
+  bossPendingNextWave = false;
+  bossAlive = false;
   scoreEl.textContent = '0';
   hpEl.textContent = '100';
   requestWakeLock();
@@ -474,13 +513,25 @@ function startGame() {
 function nextWave() {
   wave++;
   waveEl.textContent = wave;
-  shipsToSpawn = 2 + Math.ceil(wave * 1.6);
+
+  // Fewer ships per wave, but they ramp up over time. Cap so it doesn't get silly.
+  shipsToSpawn = Math.min(40, 2 + Math.ceil(wave * 1.6));
   spawnTimer = 60;
   waveClearTimer = 0;
+
+  // Carrier boss appears starting wave 5, then every 4 waves (5, 9, 13, 17, ...).
+  if (wave >= 5 && (wave - 5) % 4 === 0) {
+    bossPendingNextWave = true;
+    bossBannerEl.classList.add('visible');
+  } else {
+    bossBannerEl.classList.remove('visible');
+  }
 }
 
 
-// Tiny math helpers used everywhere below.
+// -----------------------------------------------------
+// Tiny helpers.
+// -----------------------------------------------------
 function wrap(e) {
   if (e.x < -30) e.x += W + 60;
   if (e.x > W + 30) e.x -= W + 60;
@@ -501,9 +552,9 @@ function angleDiff(a, b) {
 
 
 // -----------------------------------------------------
-// 3d. ASTEROIDS — the rocks you launch
+// 3d. ASTEROIDS
 // -----------------------------------------------------
-const AST_R = [0, 12, 22, 36];   // radius for size 1 / 2 / 3
+const AST_R = [0, 12, 22, 36];
 
 function makeAsteroid(x, y, vx, vy, size) {
   const radius = AST_R[size];
@@ -542,12 +593,17 @@ function splitAsteroid(a) {
 
 
 // -----------------------------------------------------
-// 3e. SHIPS — regular enemies and the healer
-//
-// Regular ships fly toward the base, dodge rocks, shoot bullets.
-// Healer ships drift across in a calm arc, don't shoot, don't ram.
-// Hit a healer with a rock → base gains 25 HP.
+// 3e. SHIPS — regulars (teal), healer (green), carrier (boss)
 // -----------------------------------------------------
+
+// ---- Difficulty scaling helpers ----
+// All scale 0..1 from wave 1 to wave 20 and clamp.
+function diffT() { return Math.min(1, (wave - 1) / 19); }
+function shipSpeed()    { return 0.85 + diffT() * 1.95; }   // 0.85 → 2.8
+function shipShootCdMin(){ return Math.max(22, 38 - wave * 1.2); }
+function shipShootCdMax(){ return Math.max(50, 105 - wave * 4); }
+function spawnGap()     { return Math.max(18, 88 - wave * 3.4); }  // gap between spawns
+
 function spawnShip() {
   const side = Math.floor(Math.random() * 4);
   let x, y;
@@ -557,8 +613,9 @@ function spawnShip() {
   else if (side === 2) { x = Math.random()*W; y = H+m; }
   else { x = -m; y = Math.random()*H; }
   const heading = Math.atan2(H/2 - y, W/2 - x);
-  const speed = 0.85 + Math.min(wave * 0.1, 1.6);
+  const speed = shipSpeed();
   return {
+    kind: 'regular',
     x, y,
     vx: Math.cos(heading) * speed,
     vy: Math.sin(heading) * speed,
@@ -566,13 +623,11 @@ function spawnShip() {
     shootCd: 80 + Math.random() * 60,
     radius: 10,
     speed,
-    thrustT: Math.random() * 100,
-    healer: false
+    thrustT: Math.random() * 100
   };
 }
 
 function spawnHealer() {
-  // Drifts in from one side and exits the other in a slow arc.
   const fromLeft = Math.random() < 0.5;
   const x = fromLeft ? -30 : W + 30;
   const y = rand(120, H - 120);
@@ -580,30 +635,86 @@ function spawnHealer() {
   const vx = fromLeft ? speed : -speed;
   const vy = rand(-0.3, 0.3);
   return {
+    kind: 'healer',
     x, y, vx, vy,
     heading: Math.atan2(vy, vx),
     radius: 13,
     speed,
-    healer: true,
     pulse: 0,
-    lifetime: 0
+    lifetime: 0,
+    shieldFlash: 0
+  };
+}
+
+function spawnCarrier() {
+  // Big slow boss enters from a random edge, drifts across center.
+  const fromLeft = Math.random() < 0.5;
+  const x = fromLeft ? -60 : W + 60;
+  const y = rand(160, H - 160);
+  const speed = 0.45;
+  const targetX = fromLeft ? W + 80 : -80;
+  const dx = targetX - x;
+  const dy = rand(-50, 50);
+  const heading = Math.atan2(dy, dx);
+  return {
+    kind: 'carrier',
+    x, y,
+    vx: Math.cos(heading) * speed,
+    vy: Math.sin(heading) * speed,
+    heading,
+    radius: 38,
+    speed,
+    hp: 3,                           // three size-3 hits to kill
+    spawnTimer: 90,                  // first child ship soon after entering
+    pulse: 0,
+    flash: 0
   };
 }
 
 function updateShip(s) {
-  // Healer: just drift, pulse, and exit. No combat AI.
-  if (s.healer) {
+  if (s.kind === 'healer') {
     s.x += s.vx; s.y += s.vy;
     s.heading = Math.atan2(s.vy, s.vx);
     s.pulse += 0.08;
     s.lifetime++;
+    if (s.shieldFlash > 0) s.shieldFlash--;
     return;
   }
 
+  if (s.kind === 'carrier') {
+    s.x += s.vx; s.y += s.vy;
+    s.pulse += 0.04;
+    if (s.flash > 0) s.flash--;
+
+    // Spawn child ships periodically.
+    s.spawnTimer--;
+    if (s.spawnTimer <= 0) {
+      // Child ship pops out from carrier in a random direction.
+      const ang = Math.random() * Math.PI * 2;
+      const child = spawnShip();
+      child.x = s.x + Math.cos(ang) * 30;
+      child.y = s.y + Math.sin(ang) * 30;
+      const cs = shipSpeed();
+      child.vx = Math.cos(ang) * cs;
+      child.vy = Math.sin(ang) * cs;
+      child.heading = ang;
+      ships.push(child);
+      s.spawnTimer = Math.max(110, 240 - wave * 5);
+      // Tiny visual burst at the spawn point.
+      for (let i = 0; i < 6; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const sp = 1 + Math.random() * 2;
+        particles.push({ x: child.x, y: child.y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp, life: 18, maxLife: 18, color: 'enemy' });
+      }
+      playSound('carrierSpawn');
+    }
+    return;
+  }
+
+  // Regular ship AI (unchanged from previous version, parameters scale with wave).
   const dxB = base.x - s.x, dyB = base.y - s.y;
   const distB = Math.hypot(dxB, dyB);
 
-  // Find the closest asteroid that's near enough to worry about.
   let na = null, nd = 9999;
   for (const a of asteroids) {
     const dx = a.x - s.x, dy = a.y - s.y;
@@ -611,15 +722,10 @@ function updateShip(s) {
     if (d < 100 && d < nd) { na = a; nd = d; }
   }
 
-  // Default: fly toward the base.
   let desired = Math.atan2(dyB, dxB);
-
-  // Strafe sideways at medium range so it's not just a kamikaze line.
   if (distB < 220 && distB > 130) {
     desired += Math.sin(s.thrustT * 0.012) * 0.7;
   }
-
-  // Steer away from close rocks.
   if (na) {
     const ax = s.x - na.x, ay = s.y - na.y;
     const avoid = Math.atan2(ay, ax);
@@ -627,8 +733,6 @@ function updateShip(s) {
     const d = angleDiff(avoid, desired);
     desired = desired + d * urgency * 0.75;
   }
-
-  // Turn gradually toward desired heading.
   const turnD = angleDiff(desired, s.heading);
   s.heading += Math.sign(turnD) * Math.min(Math.abs(turnD), 0.065);
 
@@ -637,7 +741,6 @@ function updateShip(s) {
   s.x += s.vx; s.y += s.vy;
   wrap(s);
 
-  // Shooting timer.
   s.shootCd--;
   if (s.shootCd <= 0) {
     let tgt = base;
@@ -651,7 +754,7 @@ function updateShip(s) {
       vx: (bdx/bd) * bs, vy: (bdy/bd) * bs,
       life: 130, fromShip: true
     });
-    s.shootCd = Math.max(38, 105 - wave * 3);
+    s.shootCd = shipShootCdMin() + Math.random() * (shipShootCdMax() - shipShootCdMin());
     playSound('shoot');
   }
   s.thrustT++;
@@ -684,10 +787,42 @@ function fireRock() {
 
 
 // -----------------------------------------------------
-// 3f. EACH FRAME: update everything, then check collisions.
+// 3f / 3g. UPDATE & COLLISIONS
 // -----------------------------------------------------
+
+// Carrier hum — a continuous low pulsing tone while a carrier is alive.
+let carrierHumOsc = null, carrierHumGain = null;
+function startCarrierHum() {
+  ensureAudio();
+  if (!audioCtx || carrierHumOsc) return;
+  carrierHumOsc  = audioCtx.createOscillator();
+  carrierHumGain = audioCtx.createGain();
+  const lfo = audioCtx.createOscillator();
+  const lfoGain = audioCtx.createGain();
+  carrierHumOsc.type = 'sawtooth';
+  carrierHumOsc.frequency.value = 55;
+  // Slow throb via LFO modulating gain.
+  lfo.frequency.value = 1.6;
+  lfoGain.gain.value = 0.04;
+  lfo.connect(lfoGain).connect(carrierHumGain.gain);
+  carrierHumGain.gain.value = 0.06;
+  carrierHumOsc.connect(carrierHumGain).connect(audioCtx.destination);
+  carrierHumOsc.start();
+  lfo.start();
+  carrierHumOsc._lfo = lfo;
+}
+function stopCarrierHum() {
+  if (!carrierHumOsc) return;
+  try {
+    carrierHumGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
+    carrierHumOsc.stop(audioCtx.currentTime + 0.6);
+    carrierHumOsc._lfo.stop(audioCtx.currentTime + 0.6);
+  } catch(e) {}
+  carrierHumOsc = null;
+  carrierHumGain = null;
+}
+
 function update() {
-  // Particles and screen-shake always update, even on screens.
   for (const p of particles) {
     p.x += p.vx; p.y += p.vy;
     p.vx *= 0.96; p.vy *= 0.96;
@@ -700,17 +835,14 @@ function update() {
 
   if (state !== 'playing') return;
 
-  // ---- Read input, aim launcher ----
-  // Keyboard: arrow keys nudge the angle.
+  // ---- Aim launcher ----
   if (keys['ArrowLeft'])  base.angle -= 0.048;
   if (keys['ArrowRight']) base.angle += 0.048;
-  // Touch/mouse: smoothly turn toward the touch angle.
   if (touchAimAngle !== null) {
     const d = angleDiff(touchAimAngle, base.angle);
     base.angle += Math.sign(d) * Math.min(Math.abs(d), 0.18);
   }
 
-  // Charge while space held OR while finger held.
   const charging = keys[' '] || touchHoldFiring;
   if (charging) {
     base.charging = true;
@@ -721,7 +853,7 @@ function update() {
     base.charging = false;
   }
 
-  // ---- Move every rock ----
+  // ---- Move rocks ----
   for (const a of asteroids) {
     a.x += a.vx; a.y += a.vy;
     a.rotation += a.spin;
@@ -729,16 +861,23 @@ function update() {
     wrap(a);
   }
 
-  // ---- Move every ship ----
+  // ---- Move ships ----
   for (const s of ships) updateShip(s);
 
   // Healers leave the playfield instead of wrapping.
+  // Carriers also leave if they make it across (unlikely but possible).
   ships = ships.filter(s => {
-    if (!s.healer) return true;
-    return !(s.x < -60 || s.x > W + 60 || s.lifetime > 800);
+    if (s.kind === 'healer')  return !(s.x < -60 || s.x > W + 60 || s.lifetime > 800);
+    if (s.kind === 'carrier') return !(s.x < -120 || s.x > W + 120);
+    return true;
   });
 
-  // ---- Move every bullet ----
+  // Track whether a carrier is currently alive (for sound & wave gating).
+  const carrierNow = ships.some(s => s.kind === 'carrier');
+  if (carrierNow && !bossAlive) { bossAlive = true;  startCarrierHum(); bossBannerEl.classList.add('visible'); }
+  if (!carrierNow && bossAlive) { bossAlive = false; stopCarrierHum();  bossBannerEl.classList.remove('visible'); }
+
+  // ---- Move bullets ----
   for (const b of bullets) {
     b.x += b.vx; b.y += b.vy;
     b.life--;
@@ -746,8 +885,7 @@ function update() {
   }
   bullets = bullets.filter(b => b.life > 0);
 
-  // ---- COLLISIONS ----
-  // Ship bullet hits a rock → rock splits.
+  // ---- Ship bullet hits a rock → split ----
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
     for (let j = asteroids.length - 1; j >= 0; j--) {
@@ -759,15 +897,15 @@ function update() {
         asteroids.push(...pieces);
         for (let k = 0; k < 7; k++) {
           const ang = Math.random() * Math.PI * 2;
-          const s = 1 + Math.random() * 2;
-          particles.push({ x: a.x, y: a.y, vx: Math.cos(ang)*s, vy: Math.sin(ang)*s, life: 22, maxLife: 22, color: 'white' });
+          const sp = 1 + Math.random() * 2;
+          particles.push({ x: a.x, y: a.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 22, maxLife: 22, color: 'white' });
         }
         break;
       }
     }
   }
 
-  // Ship bullet hits base → small damage.
+  // ---- Ship bullet hits base ----
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
     if (d2(b, base) < base.radius * base.radius) {
@@ -778,7 +916,7 @@ function update() {
       for (let k = 0; k < 9; k++) {
         const ang = Math.random() * Math.PI * 2;
         const sp = 1 + Math.random() * 2.5;
-        particles.push({ x: b.x, y: b.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 22, maxLife: 22, color: 'white' });
+        particles.push({ x: b.x, y: b.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 22, maxLife: 22, color: 'enemy' });
       }
       hpEl.textContent = Math.max(0, Math.floor(base.hp));
       playSound('hit');
@@ -786,52 +924,123 @@ function update() {
     }
   }
 
-  // Rock hits a ship.
+  // ---- Rock hits a ship ----
   for (let i = ships.length - 1; i >= 0; i--) {
     const s = ships[i];
     for (let j = asteroids.length - 1; j >= 0; j--) {
       const a = asteroids[j];
       const r = s.radius + a.radius * 0.9;
-      if (d2(s, a) < r * r) {
-        if (s.healer) {
-          // Hit a healer: heal the base, gentle particles, no rock destruction.
-          ships.splice(i, 1);
-          base.hp = Math.min(base.maxHp, base.hp + 25);
-          healFlash = 30;
-          hpEl.textContent = Math.floor(base.hp);
-          for (let k = 0; k < 28; k++) {
+      if (d2(s, a) >= r * r) continue;
+
+      if (s.kind === 'healer') {
+        // Healer can ONLY be cracked by size-3 rocks. Smaller rocks bounce.
+        if (a.size < 3) {
+          // Bounce-off: shield flicker and the rock deflects gently.
+          s.shieldFlash = 12;
+          // Reflect rock away from the healer.
+          const nx = (a.x - s.x); const ny = (a.y - s.y);
+          const nl = Math.hypot(nx, ny) || 1;
+          const ux = nx / nl, uy = ny / nl;
+          const speed = Math.hypot(a.vx, a.vy);
+          a.vx = ux * speed * 0.8;
+          a.vy = uy * speed * 0.8;
+          // Push it just outside the radius so it doesn't immediately re-collide.
+          a.x = s.x + ux * (r + 1);
+          a.y = s.y + uy * (r + 1);
+          for (let k = 0; k < 6; k++) {
             const ang = Math.random() * Math.PI * 2;
-            const sp = 1 + Math.random() * 2.5;
-            particles.push({ x: s.x, y: s.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 40 + Math.random()*20, maxLife: 60, color: 'green' });
+            const sp = 0.5 + Math.random() * 1.2;
+            particles.push({ x: a.x, y: a.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 14, maxLife: 14, color: 'green' });
           }
-          score += 50 * wave;
-          scoreEl.textContent = score;
-          playSound('heal');
-        } else {
-          // Hit a regular ship: ship dies, rock shrinks one size.
-          ships.splice(i, 1);
-          const ns = a.size - 1;
-          asteroids.splice(j, 1);
-          if (ns >= 1) asteroids.push(makeAsteroid(a.x, a.y, a.vx * 0.6, a.vy * 0.6, ns));
-          for (let k = 0; k < 24; k++) {
+          playSound('shield');
+          break;
+        }
+        // Size-3 hit: heal the base, kill the healer, consume the rock.
+        ships.splice(i, 1);
+        asteroids.splice(j, 1);
+        base.hp = Math.min(base.maxHp, base.hp + 25);
+        healFlash = 30;
+        hpEl.textContent = Math.floor(base.hp);
+        for (let k = 0; k < 28; k++) {
+          const ang = Math.random() * Math.PI * 2;
+          const sp = 1 + Math.random() * 2.5;
+          particles.push({ x: s.x, y: s.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 40 + Math.random()*20, maxLife: 60, color: 'green' });
+        }
+        score += 50 * wave;
+        scoreEl.textContent = score;
+        playSound('heal');
+        break;
+      }
+
+      if (s.kind === 'carrier') {
+        // Carriers take meaningful damage only from size-3 rocks; smaller rocks bounce.
+        if (a.size < 3) {
+          s.flash = 6;
+          // Deflect rock.
+          const nx = (a.x - s.x); const ny = (a.y - s.y);
+          const nl = Math.hypot(nx, ny) || 1;
+          const ux = nx / nl, uy = ny / nl;
+          const speed = Math.hypot(a.vx, a.vy);
+          a.vx = ux * speed * 0.7;
+          a.vy = uy * speed * 0.7;
+          a.x = s.x + ux * (r + 1);
+          a.y = s.y + uy * (r + 1);
+          for (let k = 0; k < 5; k++) {
             const ang = Math.random() * Math.PI * 2;
-            const sp = 1 + Math.random() * 3.8;
-            particles.push({ x: s.x, y: s.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 35 + Math.random()*18, maxLife: 55, color: 'white' });
+            const sp = 0.5 + Math.random() * 1.5;
+            particles.push({ x: a.x, y: a.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 12, maxLife: 12, color: 'boss' });
           }
-          score += 100 * wave;
+          playSound('shield');
+          break;
+        }
+        // Size-3 hit: takes one HP, rock consumed.
+        s.hp--;
+        s.flash = 16;
+        asteroids.splice(j, 1);
+        shake = Math.max(shake, 6);
+        for (let k = 0; k < 18; k++) {
+          const ang = Math.random() * Math.PI * 2;
+          const sp = 1 + Math.random() * 3;
+          particles.push({ x: a.x, y: a.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 28, maxLife: 28, color: 'boss' });
+        }
+        playSound('bossHit');
+        if (s.hp <= 0) {
+          ships.splice(i, 1);
+          for (let k = 0; k < 80; k++) {
+            const ang = Math.random() * Math.PI * 2;
+            const sp = 1 + Math.random() * 5;
+            particles.push({ x: s.x, y: s.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 50 + Math.random()*30, maxLife: 80, color: 'boss' });
+          }
+          score += 1000 * wave;
           scoreEl.textContent = score;
-          shake = Math.max(shake, 4);
-          playSound('kill');
+          shake = Math.max(shake, 18);
+          playSound('bossKill');
         }
         break;
       }
+
+      // Regular ship: dies, rock shrinks one size.
+      ships.splice(i, 1);
+      const ns = a.size - 1;
+      asteroids.splice(j, 1);
+      if (ns >= 1) asteroids.push(makeAsteroid(a.x, a.y, a.vx * 0.6, a.vy * 0.6, ns));
+      for (let k = 0; k < 24; k++) {
+        const ang = Math.random() * Math.PI * 2;
+        const sp = 1 + Math.random() * 3.8;
+        particles.push({ x: s.x, y: s.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 35 + Math.random()*18, maxLife: 55, color: 'enemy' });
+      }
+      score += 100 * wave;
+      scoreEl.textContent = score;
+      shake = Math.max(shake, 4);
+      playSound('kill');
+      break;
     }
   }
 
-  // Ship rams base (non-healers only).
+  // ---- Ship rams base (regulars only) ----
   for (let i = ships.length - 1; i >= 0; i--) {
     const s = ships[i];
-    if (s.healer) continue;
+    if (s.kind !== 'regular') continue;
     const r = s.radius + base.radius;
     if (d2(s, base) < r * r) {
       ships.splice(i, 1);
@@ -841,7 +1050,7 @@ function update() {
       for (let k = 0; k < 32; k++) {
         const ang = Math.random() * Math.PI * 2;
         const sp = 1 + Math.random() * 4;
-        particles.push({ x: s.x, y: s.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 40, maxLife: 40, color: 'white' });
+        particles.push({ x: s.x, y: s.y, vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp, life: 40, maxLife: 40, color: 'enemy' });
       }
       hpEl.textContent = Math.max(0, Math.floor(base.hp));
       playSound('bighit');
@@ -850,38 +1059,47 @@ function update() {
   }
 
   // ---- Wave management ----
+  // Spawn the carrier at the start of the wave if pending.
+  if (bossPendingNextWave) {
+    bossPendingNextWave = false;
+    ships.push(spawnCarrier());
+  }
+
   if (shipsToSpawn > 0) {
     spawnTimer--;
     if (spawnTimer <= 0) {
       ships.push(spawnShip());
       shipsToSpawn--;
-      spawnTimer = Math.max(32, 88 - wave * 2);
+      spawnTimer = spawnGap();
     }
-  } else if (ships.filter(s => !s.healer).length === 0) {
+  } else if (
+    ships.filter(s => s.kind === 'regular').length === 0 &&
+    !ships.some(s => s.kind === 'carrier')        // can't clear wave while boss is alive
+  ) {
     waveClearTimer++;
     if (waveClearTimer > 110) nextWave();
   }
 
-  // ---- Healer ship spawn logic ----
-  // Show up only when the base is below 70% AND wave 2+, with a long cooldown.
+  // ---- Healer spawn logic ----
   if (healerCooldown > 0) healerCooldown--;
   if (healerCooldown <= 0 && wave >= 2 && base.hp < base.maxHp * 0.7) {
-    // Don't spawn one if a healer is already on screen.
-    const hasHealer = ships.some(s => s.healer);
+    const hasHealer = ships.some(s => s.kind === 'healer');
     if (!hasHealer && Math.random() < 0.008) {
       ships.push(spawnHealer());
-      healerCooldown = 60 * 18;   // ~18 seconds at 60fps
+      healerCooldown = 60 * 18;
     }
   }
 
   // Cap rock count for performance.
-  if (asteroids.length > 45) {
-    asteroids.splice(0, asteroids.length - 45);
+  if (asteroids.length > 50) {
+    asteroids.splice(0, asteroids.length - 50);
   }
 }
 
 function gameOver() {
   state = 'gameover';
+  stopCarrierHum();
+  bossBannerEl.classList.remove('visible');
   for (let k = 0; k < 130; k++) {
     const ang = Math.random() * Math.PI * 2;
     const sp = 1 + Math.random() * 6;
@@ -895,37 +1113,34 @@ function gameOver() {
     gameoverEl.classList.remove('hidden');
     gameoverVisible = true;
   }, 1400);
-  // Release the screen wake-lock since we're idle now.
   if (wakeLock) { try { wakeLock.release(); wakeLock = null; } catch(e){} }
 }
 
 
 // -----------------------------------------------------
-// 3g. DRAWING — every shape is drawn with lines (no images).
+// 3h. DRAWING
 // -----------------------------------------------------
 function render() {
-  // Clear the actual screen rectangle (in raw device pixels, not transformed).
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.restore();
 
-  // Draw stars in logical-coordinate space.
   for (const s of stars) {
     ctx.fillStyle = 'rgba(255,255,255,' + s.b + ')';
     ctx.fillRect(s.x, s.y, 1, 1);
   }
 
-  // Apply screen shake.
   ctx.save();
   if (shake > 0) ctx.translate(rand(-shake, shake), rand(-shake, shake));
 
   if (state !== 'intro' && base) drawBase();
   for (const a of asteroids) drawAsteroid(a);
   for (const s of ships) {
-    if (s.healer) drawHealer(s);
-    else drawShip(s);
+    if (s.kind === 'healer')       drawHealer(s);
+    else if (s.kind === 'carrier') drawCarrier(s);
+    else                           drawShip(s);
   }
   for (const b of bullets) drawBullet(b);
   for (const p of particles) drawParticle(p);
@@ -936,13 +1151,11 @@ function render() {
 function drawBase() {
   ctx.save();
   ctx.translate(base.x, base.y);
-  // Heal flash overrides damage flash (good news beats bad).
-  if (healFlash > 0)      ctx.strokeStyle = '#5fff8e';
-  else if (baseFlash > 0) ctx.strokeStyle = '#ff6a6a';
-  else                    ctx.strokeStyle = '#ffffff';
+  if (healFlash > 0)      ctx.strokeStyle = COL_HEALER;
+  else if (baseFlash > 0) ctx.strokeStyle = COL_DAMAGE;
+  else                    ctx.strokeStyle = COL_PLAYER;
   ctx.lineWidth = 2;
 
-  // Octagonal hull.
   ctx.beginPath();
   for (let i = 0; i < 8; i++) {
     const a = (i/8) * Math.PI*2 + Math.PI/8;
@@ -953,18 +1166,15 @@ function drawBase() {
   ctx.closePath();
   ctx.stroke();
 
-  // Inner circle.
   ctx.beginPath();
   ctx.arc(0, 0, base.radius * 0.55, 0, Math.PI * 2);
   ctx.stroke();
 
-  // Crosshair.
   ctx.beginPath();
   ctx.moveTo(-6, 0); ctx.lineTo(6, 0);
   ctx.moveTo(0, -6); ctx.lineTo(0, 6);
   ctx.stroke();
 
-  // Launcher barrel.
   ctx.rotate(base.angle);
   ctx.beginPath();
   ctx.moveTo(base.radius * 0.6, -5);
@@ -974,14 +1184,16 @@ function drawBase() {
   ctx.closePath();
   ctx.stroke();
 
-  // Charge ball at the barrel tip.
   if (base.charge > 0.02) {
     const cr = 2 + base.charge * 13;
-    ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + base.charge * 0.6) + ')';
+    // Tint the charge ball gold once it's at size-3 (so player can see "this'll crack a healer").
+    const isBig = base.charge >= 0.78;
+    const ballColor = isBig ? '255, 220, 120' : '255, 255, 255';
+    ctx.fillStyle = 'rgba(' + ballColor + ',' + (0.35 + base.charge * 0.6) + ')';
     ctx.beginPath();
     ctx.arc(base.radius + 14 + cr, 0, cr, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.strokeStyle = 'rgba(' + ballColor + ',0.55)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(base.radius + 14 + cr, 0,
@@ -990,7 +1202,6 @@ function drawBase() {
   }
   ctx.restore();
 
-  // Health bar.
   const bw = 70, bh = 4;
   const bx = base.x - bw/2;
   const by = base.y + base.radius + 16;
@@ -998,7 +1209,7 @@ function drawBase() {
   ctx.lineWidth = 1;
   ctx.strokeRect(bx - 0.5, by - 0.5, bw + 1, bh + 1);
   const ratio = Math.max(0, base.hp / base.maxHp);
-  ctx.fillStyle = healFlash > 0 ? '#5fff8e' : (ratio > 0.3 ? '#fff' : '#ff5555');
+  ctx.fillStyle = healFlash > 0 ? COL_HEALER : (ratio > 0.3 ? COL_PLAYER : COL_LOWHP);
   ctx.fillRect(bx, by, bw * ratio, bh);
 }
 
@@ -1006,7 +1217,7 @@ function drawAsteroid(a) {
   ctx.save();
   ctx.translate(a.x, a.y);
   ctx.rotate(a.rotation);
-  ctx.strokeStyle = '#fff';
+  ctx.strokeStyle = COL_PLAYER;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   for (let i = 0; i < a.shape.length; i++) {
@@ -1024,7 +1235,7 @@ function drawShip(s) {
   ctx.save();
   ctx.translate(s.x, s.y);
   ctx.rotate(s.heading);
-  ctx.strokeStyle = '#fff';
+  ctx.strokeStyle = COL_ENEMY;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.moveTo(12, 0);
@@ -1046,18 +1257,25 @@ function drawShip(s) {
 }
 
 function drawHealer(s) {
-  // A glowing green ship with a + symbol on top, slowly pulsing.
   const pulse = 0.65 + Math.sin(s.pulse) * 0.35;
   ctx.save();
   ctx.translate(s.x, s.y);
 
-  // Outer glow halo.
   ctx.fillStyle = 'rgba(95, 255, 142, ' + (0.10 + pulse * 0.10) + ')';
   ctx.beginPath();
   ctx.arc(0, 0, s.radius + 14, 0, Math.PI * 2);
   ctx.fill();
 
-  // Hull (slightly larger than a normal ship).
+  // Shield flicker when small rocks bounce off.
+  if (s.shieldFlash > 0) {
+    const sa = s.shieldFlash / 12;
+    ctx.strokeStyle = 'rgba(95, 255, 142, ' + sa + ')';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, s.radius + 7 + (1 - sa) * 6, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
   ctx.rotate(s.heading);
   ctx.strokeStyle = 'rgba(95, 255, 142, ' + (0.7 + pulse * 0.3) + ')';
   ctx.lineWidth = 2;
@@ -1070,10 +1288,9 @@ function drawHealer(s) {
   ctx.stroke();
   ctx.restore();
 
-  // Bright + symbol (drawn unrotated so it's always upright).
   ctx.save();
   ctx.translate(s.x, s.y);
-  ctx.strokeStyle = '#5fff8e';
+  ctx.strokeStyle = COL_HEALER;
   ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.moveTo(-5, 0); ctx.lineTo(5, 0);
@@ -1082,24 +1299,87 @@ function drawHealer(s) {
   ctx.restore();
 }
 
+function drawCarrier(s) {
+  const p = 0.5 + Math.sin(s.pulse) * 0.5;
+  ctx.save();
+  ctx.translate(s.x, s.y);
+
+  // Outer warning glow.
+  ctx.fillStyle = 'rgba(255, 77, 109, ' + (0.06 + p * 0.06) + ')';
+  ctx.beginPath();
+  ctx.arc(0, 0, s.radius + 22, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Hull flash if recently hit.
+  const baseColor = s.flash > 8 ? '#ffffff' : COL_BOSS;
+
+  ctx.strokeStyle = baseColor;
+  ctx.lineWidth = 2;
+
+  // Big hex hull.
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const ang = (i / 6) * Math.PI * 2;
+    const x = Math.cos(ang) * s.radius;
+    const y = Math.sin(ang) * s.radius;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.stroke();
+
+  // Inner ring.
+  ctx.beginPath();
+  ctx.arc(0, 0, s.radius * 0.55, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Spokes.
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < 6; i++) {
+    const ang = (i / 6) * Math.PI * 2 + s.pulse * 0.1;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(ang) * s.radius * 0.55, Math.sin(ang) * s.radius * 0.55);
+    ctx.lineTo(Math.cos(ang) * s.radius,        Math.sin(ang) * s.radius);
+    ctx.stroke();
+  }
+
+  // Center pulse light.
+  ctx.fillStyle = 'rgba(255, 77, 109, ' + (0.4 + p * 0.6) + ')';
+  ctx.beginPath();
+  ctx.arc(0, 0, 6 + p * 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+
+  // HP pips above the carrier.
+  const pipW = 8, pipH = 3, gap = 3;
+  const total = 3;
+  const startX = s.x - ((pipW * total) + gap * (total - 1)) / 2;
+  const py = s.y - s.radius - 10;
+  for (let i = 0; i < total; i++) {
+    const filled = i < s.hp;
+    ctx.fillStyle = filled ? COL_BOSS : 'rgba(255,77,109,0.2)';
+    ctx.fillRect(startX + i * (pipW + gap), py, pipW, pipH);
+  }
+}
+
 function drawBullet(b) {
-  ctx.fillStyle = '#fff';
+  ctx.fillStyle = COL_ENEMY;
   ctx.fillRect(b.x - 1.5, b.y - 1.5, 3, 3);
 }
 function drawParticle(p) {
   const a = Math.max(0, p.life / p.maxLife);
-  if (p.color === 'green') {
-    ctx.fillStyle = 'rgba(95,255,142,' + a + ')';
-  } else {
-    ctx.fillStyle = 'rgba(255,255,255,' + a + ')';
-  }
+  let col;
+  if      (p.color === 'green') col = '95,255,142';
+  else if (p.color === 'enemy') col = '77,214,224';
+  else if (p.color === 'boss')  col = '255,77,109';
+  else                          col = '255,255,255';
+  ctx.fillStyle = 'rgba(' + col + ',' + a + ')';
   ctx.fillRect(p.x, p.y, 2, 2);
 }
 
 
 // -----------------------------------------------------
-// 3h. SOUND — short synth beeps via the browser's audio API.
-// No audio files are loaded; every sound is generated live.
+// 3i. SOUND
 // -----------------------------------------------------
 let audioCtx;
 function ensureAudio() {
@@ -1158,14 +1438,12 @@ function playSound(kind, param) {
       o.start(now); o.stop(now + 0.32); break;
     }
     case 'heal': {
-      // Pleasant rising chime.
       o.type = 'triangle';
       o.frequency.setValueAtTime(380, now);
       o.frequency.exponentialRampToValueAtTime(820, now + 0.32);
       g.gain.setValueAtTime(0.07, now);
       g.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
       o.start(now); o.stop(now + 0.44);
-      // Second voice for sparkle.
       const o2 = audioCtx.createOscillator();
       const g2 = audioCtx.createGain();
       o2.connect(g2); g2.connect(audioCtx.destination);
@@ -1176,6 +1454,52 @@ function playSound(kind, param) {
       g2.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
       o2.start(now + 0.05); o2.stop(now + 0.46);
       break;
+    }
+    case 'shield': {
+      // Quick metallic ping for "rock bounced off."
+      o.type = 'square';
+      o.frequency.setValueAtTime(900, now);
+      o.frequency.exponentialRampToValueAtTime(1400, now + 0.07);
+      g.gain.setValueAtTime(0.03, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+      o.start(now); o.stop(now + 0.11); break;
+    }
+    case 'bossHit': {
+      o.type = 'square';
+      o.frequency.setValueAtTime(80, now);
+      o.frequency.exponentialRampToValueAtTime(200, now + 0.14);
+      o.frequency.exponentialRampToValueAtTime(50, now + 0.34);
+      g.gain.setValueAtTime(0.12, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+      o.start(now); o.stop(now + 0.4); break;
+    }
+    case 'bossKill': {
+      // Big descending boom.
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(220, now);
+      o.frequency.exponentialRampToValueAtTime(28, now + 1.2);
+      g.gain.setValueAtTime(0.18, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 1.3);
+      o.start(now); o.stop(now + 1.3);
+      const o2 = audioCtx.createOscillator();
+      const g2 = audioCtx.createGain();
+      o2.connect(g2); g2.connect(audioCtx.destination);
+      o2.type = 'square';
+      o2.frequency.setValueAtTime(440, now);
+      o2.frequency.exponentialRampToValueAtTime(60, now + 0.9);
+      g2.gain.setValueAtTime(0.08, now);
+      g2.gain.exponentialRampToValueAtTime(0.001, now + 1.0);
+      o2.start(now); o2.stop(now + 1.0);
+      break;
+    }
+    case 'carrierSpawn': {
+      // Brief whoosh as a child ship is launched.
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(180, now);
+      o.frequency.exponentialRampToValueAtTime(540, now + 0.18);
+      g.gain.setValueAtTime(0.04, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+      o.start(now); o.stop(now + 0.22); break;
     }
     case 'gameover': {
       o.type = 'sawtooth';
@@ -1190,7 +1514,7 @@ function playSound(kind, param) {
 
 
 // -----------------------------------------------------
-// 3i. MAIN LOOP — fixed step, ~60 updates/second.
+// 3j. MAIN LOOP
 // -----------------------------------------------------
 let acc = 0, lastT = performance.now();
 const STEP = 1000 / 60;
